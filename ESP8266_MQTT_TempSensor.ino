@@ -4,12 +4,8 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
 #include <PubSubClient.h>
+#include <ArduinoJson.h>
 
-#define SECOND 1000
-#define MINUTE SECOND * 60
-#define HOUR MINUTE * 60
-
-#define INTERVAL 20 * SECOND
 
 /******************************************************************/
 /*                         WIFI SETTINGS                          */
@@ -22,27 +18,39 @@
 /******************************************************************/
 #define mqtt_server "192.168.0.23"
 
-#define humidity_topic "sensor/humidity"
-#define temperature_topic "sensor/temperature"
+#define mqtt_topic "sensor/readings"
+
+#define LOCATION "GREENHOUSE"
+#define INTERVAL 20 * 60
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 Adafruit_BME280 bme;
 
+extern "C" {
+  ADC_MODE(ADC_VCC); //vcc read
+}
+
 static boolean sensorInitialized = false;
 
 void setup() {
- Serial.begin(115200);
- Serial.println("Setting up MQTT Temp Sensor...");
- setup_wifi();
- delay(1);
- client.setServer(mqtt_server, 1883);
- bme.begin();
+  pinMode(LED_BUILTIN, OUTPUT);
+  // Set initial state of LED off
+  digitalWrite(LED_BUILTIN, HIGH);
+  
+  Serial.begin(115200);
+  Serial.println("Setting up MQTT Temp Sensor...");
+  setup_wifi();
+  delay(1);
+  client.setServer(mqtt_server, 1883);
+  if (!bme.begin()) {
+    Serial.println("Could not find a valid BME280 sensor, check wiring!"); 
+  }
 
 }
 
 void setup_wifi() {
- Serial.println("Starting Wifi Setup...");
+ Serial.println("\r\nStarting Wifi Setup...");
  delay(10);
  // We start by connecting to a WiFi network
  Serial.println();
@@ -85,38 +93,37 @@ bool checkBound(float newValue, float prevValue, float maxDiff) {
  return newValue < prevValue - maxDiff || newValue > prevValue + maxDiff;
 }
 
-long lastMsg = millis() - (INTERVAL + SECOND);
-float temp = 0.0;
-float hum = 0.0;
-float diff = 1.0;
+//long lastMsg = millis() - (INTERVAL + SECOND);
+
+DynamicJsonBuffer jsonBuffer;
 
 void loop() {
-if (!client.connected()) {
-   reconnect();
- }
- client.loop();
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
 
- long now = millis();
- if ( (now - lastMsg ) > INTERVAL ) {
   Serial.println("Starting send...");
-   lastMsg = now;
-   
-   float newTemp = bme.readTemperature();
-   float newHum = bme.readHumidity();
+  //lastMsg = now;
 
-   if (checkBound(newTemp, temp, diff)) {
-     temp = newTemp;
-     Serial.print("New temperature:");
-     Serial.println(String(temp).c_str());
-     client.publish(temperature_topic, String(temp).c_str(), true);
-   }
+  float vdd = ESP.getVcc() / 1000.0;
+  float newTemp = bme.readTemperature();
+  float newHum = bme.readHumidity();
 
-   if (checkBound(newHum, hum, diff)) {
-     hum = newHum;
-     Serial.print("New humidity:");
-     Serial.println(String(hum).c_str());
-     client.publish(humidity_topic, String(hum).c_str(), true);
-   }
- }
+  String jsonResult = "";
+  
+  JsonObject& root = jsonBuffer.createObject();
+  root["temperature"] = newTemp;
+  root["humidity"] = newHum;
+  root["location"] = LOCATION;
+  root["vcc"] = vdd;  
 
+  root.prettyPrintTo(jsonResult);
+  
+  Serial.print(jsonResult);
+  
+  client.publish(mqtt_topic, String(jsonResult).c_str(), true);
+
+  Serial.println("\r\nGoing to sleep for " + String((int)INTERVAL) + " seconds...");
+  ESP.deepSleep(INTERVAL * 1000000);
 }
